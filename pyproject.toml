@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "marl-vsl"
+version = "0.1.0"
+description = ""
+authors = ["Alex M <alex.martin@cabinetoffice.gov.uk>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9.6"
+numpy = "^2.0.1"
+torch = "^2.4.0"
+ipykernel = "^6.29.5"
+wandb = "^0.17.5"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
