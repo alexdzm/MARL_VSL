@@ -7,65 +7,89 @@ import wandb
 from collections import deque
 import random
 
-# Initialize wandb
+# Initialize wandb for experiment tracking
 wandb.init(project="vsl-marl", config={
-    "num_agents": 12,
-    "num_episodes": 10000,
-    "learning_rate": 0.0003,
-    "gamma": 0.99,
-    "tau": 0.005,
-    "batch_size": 64,
-    "buffer_size": 100000,
-    "update_every": 4,
-    "hidden_size": 128
+    "num_agents": 12,          # Number of VSL agents
+    "num_episodes": 10000,     # Total number of training episodes
+    "learning_rate": 0.0003,   # Learning rate for optimizers
+    "gamma": 0.99,             # Discount factor for future rewards
+    "tau": 0.005,              # Soft update parameter for target networks
+    "batch_size": 64,          # Batch size for training
+    "buffer_size": 100000,     # Size of replay buffer
+    "update_every": 4,         # How often to update the network
+    "hidden_size": 128         # Size of hidden layers in neural networks
 })
 
+# Set the device (GPU if available, else CPU)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 class Actor(nn.Module):
+    """Actor (Policy) Model."""
+
     def __init__(self, state_size, action_size, hidden_size):
+        """Initialize parameters and build model.
+        Params:
+            state_size (int): Dimension of each state
+            action_size (int): Dimension of each action
+            hidden_size (int): Size of hidden layers
+        """
         super(Actor, self).__init__()
         self.fc1 = nn.Linear(state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, action_size)
         
     def forward(self, x):
+        """Build an actor (policy) network that maps states -> actions."""
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        return F.softmax(self.fc3(x), dim=-1)
+        return F.softmax(self.fc3(x), dim=-1)  # Output action probabilities
 
 class Critic(nn.Module):
+    """Critic (Value) Model."""
+
     def __init__(self, state_size, action_size, hidden_size):
+        """Initialize parameters and build model.
+        Params:
+            state_size (int): Dimension of each state
+            action_size (int): Dimension of each action
+            hidden_size (int): Size of hidden layers
+        """
         super(Critic, self).__init__()
         self.fc1 = nn.Linear(state_size + action_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, 1)
         
     def forward(self, state, action):
+        """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
         x = torch.cat([state, action], dim=-1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         return self.fc3(x)
 
 class VSLEnvironment:
+    """Variable Speed Limit (VSL) Environment."""
+
     def __init__(self, num_agents):
+        """Initialize environment parameters."""
         self.num_agents = num_agents
         self.state_size = 6
         self.action_size = 5
         self.max_speed = 80
         self.min_speed = 20
-        self.max_time_steps = 288
+        self.max_time_steps = 288  # 5-minute intervals for 24 hours
         self.rush_hour_morning = (7, 10)
         self.rush_hour_evening = (16, 19)
         
     def reset(self):
+        """Reset the environment to initial state."""
         self.current_time_step = 0
         self.speeds = np.ones(self.num_agents) * 60
         self.occupancies = np.ones(self.num_agents) * 0.2
         return self._get_states()
     
     def _get_states(self):
+        """Get the current state for all agents."""
         states = []
         time_of_day = self.current_time_step / self.max_time_steps
         for i in range(self.num_agents):
@@ -78,11 +102,13 @@ class VSLEnvironment:
         return states
     
     def _is_rush_hour(self):
+        """Check if current time is during rush hour."""
         hour = (self.current_time_step * 24) // self.max_time_steps
         return (self.rush_hour_morning[0] <= hour < self.rush_hour_morning[1]) or \
                (self.rush_hour_evening[0] <= hour < self.rush_hour_evening[1])
     
     def step(self, actions):
+        """Execute one time step within the environment."""
         # Update speeds based on VSL and improved car-following model
         for i in range(self.num_agents):
             vsl = [30, 40, 50, 60, 70][actions[i]]
@@ -123,6 +149,7 @@ class VSLEnvironment:
         return next_states, rewards, done
     
     def _check_termination(self):
+        """Check if the episode should terminate."""
         if self.current_time_step >= self.max_time_steps:
             return True
         if all(o > 0.3 for o in self.occupancies) and self.current_time_step % 6 == 0:
@@ -132,14 +159,23 @@ class VSLEnvironment:
         return False
 
 class ReplayBuffer:
+    """Fixed-size buffer to store experience tuples."""
+
     def __init__(self, buffer_size, batch_size):
-        self.memory = deque(maxlen=buffer_size)
+        """Initialize a ReplayBuffer object.
+        Params:
+            buffer_size (int): maximum size of buffer
+            batch_size (int): size of each training batch
+        """
+        self.memory = deque(maxlen=buffer_size)  
         self.batch_size = batch_size
         
     def add(self, state, action, reward, next_state, done):
+        """Add a new experience to memory."""
         self.memory.append((state, action, reward, next_state, done))
         
     def sample(self):
+        """Randomly sample a batch of experiences from memory."""
         experiences = random.sample(self.memory, k=self.batch_size)
         states, actions, rewards, next_states, dones = zip(*experiences)
         return (torch.FloatTensor(states).to(device),
@@ -149,23 +185,30 @@ class ReplayBuffer:
                 torch.FloatTensor(dones).to(device))
     
     def __len__(self):
+        """Return the current size of internal memory."""
         return len(self.memory)
 
 def train_marl(num_agents, num_episodes):
+    """Train the MARL system."""
     env = VSLEnvironment(num_agents)
+    
+    # Create actors, critics, and their target networks
     actors = [Actor(env.state_size, env.action_size, wandb.config.hidden_size).to(device) for _ in range(num_agents)]
     critics = [Critic(env.state_size, env.action_size, wandb.config.hidden_size).to(device) for _ in range(num_agents)]
     actor_targets = [Actor(env.state_size, env.action_size, wandb.config.hidden_size).to(device) for _ in range(num_agents)]
     critic_targets = [Critic(env.state_size, env.action_size, wandb.config.hidden_size).to(device) for _ in range(num_agents)]
     
+    # Initialize target networks
     for actor, actor_target in zip(actors, actor_targets):
         actor_target.load_state_dict(actor.state_dict())
     for critic, critic_target in zip(critics, critic_targets):
         critic_target.load_state_dict(critic.state_dict())
     
+    # Create optimizers
     actor_optimizers = [optim.Adam(actor.parameters(), lr=wandb.config.learning_rate) for actor in actors]
     critic_optimizers = [optim.Adam(critic.parameters(), lr=wandb.config.learning_rate) for critic in critics]
     
+    # Create replay buffer
     replay_buffer = ReplayBuffer(wandb.config.buffer_size, wandb.config.batch_size)
     
     for episode in range(num_episodes):
@@ -185,9 +228,11 @@ def train_marl(num_agents, num_episodes):
             next_states, rewards, done = env.step(actions)
             episode_reward += sum(rewards)
             
+            # Store experience in replay buffer
             for i in range(num_agents):
                 replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], done)
             
+            # Learn if enough samples are available in memory
             if len(replay_buffer) > wandb.config.batch_size and step % wandb.config.update_every == 0:
                 for i in range(num_agents):
                     experiences = replay_buffer.sample()
@@ -220,11 +265,13 @@ def train_marl(num_agents, num_episodes):
             states = next_states
             step += 1
             
+            # Log step data
             wandb.log({
                 "step_reward": sum(rewards),
                 "step": step + episode * env.max_time_steps
             })
         
+        # Log episode data
         wandb.log({
             "episode": episode,
             "episode_reward": episode_reward,
@@ -240,4 +287,5 @@ num_agents = wandb.config.num_agents
 num_episodes = wandb.config.num_episodes
 train_marl(num_agents, num_episodes)
 
+# Finish the wandb run
 wandb.finish()
